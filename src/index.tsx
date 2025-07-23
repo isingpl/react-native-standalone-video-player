@@ -4,7 +4,6 @@ import {
   NativeModules,
   requireNativeComponent,
 } from 'react-native';
-import {} from 'react-native';
 
 // - - - - - -
 
@@ -21,7 +20,7 @@ type StandaloneVideoPlayerType = {
     isSilent: boolean
   ): void;
 
-  setVolume(volume: number): void;
+  setVolume(instance:number, volume: number): void;
 
   seek(instance: number, position: number): void;
 
@@ -214,8 +213,13 @@ function useVideoPlayer(playerInstance = 0) {
     return CurrentVideoId[playerInstance];
   }, [playerInstance]);
 
+  const setVolume = useCallback((volume: number) => {
+    PlayerVideoManager.setVolume(playerInstance, volume);
+  }, [playerInstance]);
+
   return useMemo(
     () => ({
+      setVolume,
       play,
       pause,
       stop,

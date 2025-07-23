@@ -170,6 +170,13 @@ class PlayerVideo: NSObject {
     
     addObservers()
   }
+
+  @objc
+  func setVolume(volume: Float) {
+    log("setVolume")
+    
+    player.volume=volume
+  }
   
   @objc
   func play() {
