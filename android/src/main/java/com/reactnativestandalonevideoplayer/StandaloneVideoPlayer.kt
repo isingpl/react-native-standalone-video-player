@@ -124,19 +124,6 @@ class StandaloneVideoPlayer(val context: ReactApplicationContext): ReactContextB
   }
 
   @ReactMethod
-  fun setVolume(instance: Int, volume: Float) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
-      return
-    }
-
-    Handler(context.mainLooper).post {
-      Log.d("PlayerVideo", "SETVOLUME")
-
-      PlayerVideo.instances[instance].setVolume(volume)
-    }
-  }
-
-  @ReactMethod
   fun play(instance: Int) {
     if (instance < 0 || instance >= PlayerVideo.instances.size) {
       return
