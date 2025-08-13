@@ -100,6 +100,9 @@ class PlayerVideo: NSObject {
   var progressChanged: ((_ newProgress: Double, _ duration: Double) -> ())?
   
   @objc
+  var muteChanged: ((Bool) -> Void)?
+  
+  @objc
   var statusChanged2: (() -> ())?
   
   @objc
@@ -170,13 +173,6 @@ class PlayerVideo: NSObject {
     
     addObservers()
   }
-
-  @objc
-  func setVolume(volume: Float) {
-    log("setVolume")
-    
-    player.volume=volume
-  }
   
   @objc
   func play() {
@@ -198,6 +194,17 @@ class PlayerVideo: NSObject {
     shouldPlay = false
     
     setStatus(.paused)
+  }
+  
+  @objc
+  func setMuted(isMuted: Bool) {
+    player.isMuted = isMuted
+    muteChanged?(isMuted)
+  }
+
+  @objc
+  func getMuted() -> Bool {
+      return player.isMuted
   }
   
   @objc
