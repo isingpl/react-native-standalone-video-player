@@ -14,7 +14,11 @@ RCT_EXTERN_METHOD(seekForward: (NSInteger)instance withTime: (nonnull double*)ti
 
 RCT_EXTERN_METHOD(seekRewind: (NSInteger)instance withTime: (nonnull double*)time);
 
-RCT_EXTERN_METHOD(setVolume: (NSInteger)instance volume: (float)volume)
+RCT_EXTERN_METHOD(setMuted: (NSInteger)instance isMuted: (BOOL)isMuted)
+
+RCT_EXTERN_METHOD(getMuted: (NSInteger)instance
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject);
 
 RCT_EXTERN_METHOD(play: (NSInteger)instance);
 
