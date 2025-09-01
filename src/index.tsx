@@ -4,6 +4,7 @@ import {
   NativeModules,
   requireNativeComponent,
 } from 'react-native';
+import {} from 'react-native';
 
 // - - - - - -
 
@@ -20,7 +21,8 @@ type StandaloneVideoPlayerType = {
     isSilent: boolean
   ): void;
 
-  setVolume(instance:number, volume: number): void;
+  setMuted(instance:number, isMuted: boolean): void;
+  getMuted(instance:number): Promise<boolean>
 
   seek(instance: number, position: number): void;
 
@@ -113,6 +115,20 @@ function getVideoDuration(playerInstance = 0): Promise<number> {
 
 //
 
+function getMuted(playerInstance = 0): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!PlayerVideoManager.getMuted) {
+      console.warn('getMuted not implemented');
+      resolve(false);
+    }
+
+    PlayerVideoManager.getMuted(playerInstance)
+      .then((val) => resolve(val || false))
+      .catch(() => resolve(false));
+  });
+} 
+//
+
 function getVideoProgress(playerInstance = 0): Promise<number> {
   return new Promise((resolve) => {
     if (!PlayerVideoManager.getProgress) {
@@ -124,6 +140,35 @@ function getVideoProgress(playerInstance = 0): Promise<number> {
       .then((val) => resolve(val || 0))
       .catch(() => resolve(0));
   });
+}
+
+//
+
+export function useMuted(playerInstance = 0) {
+  const [isMuted, setIsMuted] = useState(false);
+
+  const setMuted = useCallback((isMuted: boolean) => {
+    PlayerVideoManager.setMuted(playerInstance, isMuted);
+  }, [playerInstance]);
+
+   useEffect(() => {
+    const subscription = eventEmitter.addListener(
+      'PlayerMuteChanged',
+      (event) => {
+        if (event.instance === playerInstance) {
+          setIsMuted(event.isMuted);
+        }
+      }
+    );
+
+    return () => subscription.remove();
+  }, [playerInstance]);
+
+  useEffect(() => {
+    getMuted(playerInstance).then(setIsMuted);
+  }, [playerInstance]);
+
+  return {isMuted,setMuted};
 }
 
 //
@@ -213,13 +258,8 @@ function useVideoPlayer(playerInstance = 0) {
     return CurrentVideoId[playerInstance];
   }, [playerInstance]);
 
-  const setVolume = useCallback((volume: number) => {
-    PlayerVideoManager.setVolume(playerInstance, volume);
-  }, [playerInstance]);
-
   return useMemo(
     () => ({
-      setVolume,
       play,
       pause,
       stop,

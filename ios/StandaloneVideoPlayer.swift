@@ -4,7 +4,7 @@ import Foundation
 class StandaloneVideoPlayer: RCTEventEmitter {
 
     override func supportedEvents() -> [String]! {
-        return ["PlayerStatusChanged", "PlayerProgressChanged"]
+        return ["PlayerStatusChanged", "PlayerProgressChanged", "PlayerMuteChanged"]
     }
 
     
@@ -17,13 +17,36 @@ class StandaloneVideoPlayer: RCTEventEmitter {
 
     //
   
-    @objc(setVolume:volume:)
-    func setVolume(instance: Int, volume: Float) {
-      guard instance >= 0 && instance < PlayerVideo.instances.count else { return }
-      
-      PlayerVideo.instances[instance].setVolume(volume: volume)
+    @objc(setMuted:isMuted:)
+    func setMuted(instance: Int, isMuted: Bool) {
+        guard instance >= 0 && instance < PlayerVideo.instances.count else { return }
+        let player = PlayerVideo.instances[instance]
+
+        player.setMuted(isMuted: isMuted)
+
+        if player.muteChanged == nil {
+            player.muteChanged = { isMuted in
+                self.sendEvent(withName: "PlayerMuteChanged", body: [
+                    "isMuted": isMuted,
+                    "instance": instance
+                ])
+            }
+        }
     }
-    
+
+  //
+  
+    @objc(getMuted:resolver:rejecter:)
+    func getMuted(instance: Int, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        guard instance >= 0 && instance < PlayerVideo.instances.count else {
+            resolve(0)
+            return
+        }
+        
+        let isMuted = PlayerVideo.instances[instance].player.isMuted
+        resolve(isMuted)
+    }
+
     //
 
     @objc(load:withUrl:withHls:withLoop:withSilent:)
