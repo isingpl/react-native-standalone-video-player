@@ -207,6 +207,8 @@ class StandaloneVideoPlayer(val context: ReactApplicationContext): ReactContextB
         context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
           .emit("PlayerMuteChanged", map)
       }
+      
+      PlayerVideo.instances[instance].setMuted(isMuted)
     }
   }
 
