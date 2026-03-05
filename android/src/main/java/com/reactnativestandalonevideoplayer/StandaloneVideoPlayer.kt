@@ -64,7 +64,7 @@ class StandaloneVideoPlayer(val context: ReactApplicationContext): ReactContextB
   }
 
   @ReactMethod
-  fun load(instance: Int, url: String, isHls: Boolean, loop: Boolean, isSilent: Boolean) {
+  fun load(instance: Int, url: String, isHls: Boolean, loop: Boolean, isSilent: Boolean, initialTime: Int) {
     if (instance < 0 || instance >= PlayerVideo.instances.size) {
       return
     }
@@ -98,7 +98,7 @@ class StandaloneVideoPlayer(val context: ReactApplicationContext): ReactContextB
           .emit("PlayerProgressChanged", map)
       }
 
-      PlayerVideo.instances[instance].loadVideo(url, isHls, loop)
+      PlayerVideo.instances[instance].loadVideo(url, isHls, loop, initialTime)
 
       if (isSilent) {
         PlayerVideo.instances[instance].volume = 0f
@@ -207,7 +207,7 @@ class StandaloneVideoPlayer(val context: ReactApplicationContext): ReactContextB
         context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
           .emit("PlayerMuteChanged", map)
       }
-      
+
       PlayerVideo.instances[instance].setMuted(isMuted)
     }
   }

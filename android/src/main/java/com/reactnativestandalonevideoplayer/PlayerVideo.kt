@@ -78,7 +78,7 @@ class PlayerVideo(private val context: Context) {
     get() = if (player.duration > 0) player.currentPosition.toDouble() / player.duration.toDouble() else 0.0
     set(_) {}
 
-  fun loadVideo(url: String, isHls: Boolean, loop: Boolean) {
+  fun loadVideo(url: String, isHls: Boolean, loop: Boolean, initialTime: Int) {
     Log.d("PlayerVideo", "load = $url")
 
     val dataSourceFactory = DefaultDataSource.Factory(context)
@@ -94,7 +94,7 @@ class PlayerVideo(private val context: Context) {
     player.volume = 1f
     muteChanged?.invoke(false)
 
-    player.setMediaSource(mediaSource)
+    player.setMediaSource(mediaSource, initialTime.toLong())
     player.prepare()
 
     player.playWhenReady = autoplay

@@ -18,7 +18,8 @@ type StandaloneVideoPlayerType = {
     url: string,
     hls: boolean,
     loop: boolean,
-    isSilent: boolean
+    isSilent: boolean,
+    initialTime: number,
   ): void;
 
   setMuted(instance:number, isMuted: boolean): void;
@@ -126,7 +127,7 @@ function getMuted(playerInstance = 0): Promise<boolean> {
       .then((val) => resolve(val || false))
       .catch(() => resolve(false));
   });
-} 
+}
 //
 
 function getVideoProgress(playerInstance = 0): Promise<number> {
@@ -201,7 +202,8 @@ function useVideoPlayer(playerInstance = 0) {
       id: string | null = null,
       isHls = true,
       loop = false,
-      isSilent = false
+      isSilent = false,
+      initialTime = 0,
     ) => {
       if (playerInstance >= PlayerInstances) {
         createStandalonePlayerVideoInstance();
@@ -227,7 +229,7 @@ function useVideoPlayer(playerInstance = 0) {
         // TODO: handle autoplay
       }
 
-      PlayerVideoManager.load(playerInstance, url, isHls, loop, isSilent);
+      PlayerVideoManager.load(playerInstance, url, isHls, loop, isSilent, initialTime);
     },
     [playerInstance]
   );
@@ -424,6 +426,7 @@ export {
   PlayerVideoManager,
   clearPlayerVideo,
   getVideoDuration,
+  getVideoProgress,
   useVideoPlayer,
   usePlayerVideoStatus,
   usePlayerVideoProgress,
