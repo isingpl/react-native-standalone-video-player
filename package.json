@@ -66,6 +66,14 @@
     "react": "*",
     "react-native": "*"
   },
+  "codegenConfig": {
+    "name": "RNStandaloneVideoPlayerSpec",
+    "type": "all",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.reactnativestandalonevideoplayer"
+    }
+  },
   "jest": {
     "preset": "react-native",
     "modulePathIgnorePatterns": [
