@@ -2,13 +2,39 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   NativeEventEmitter,
   NativeModules,
-  requireNativeComponent,
+  TurboModuleRegistry,
 } from 'react-native';
-import {} from 'react-native';
+import RNTPlayerVideoView from './PlayerVideoNativeComponent';
 
 // - - - - - -
 
-const { StandaloneVideoPlayer } = NativeModules;
+// Lazy module resolution. Under bridgeless newArch, the TurboModule proxy can be
+// uninitialised at module-eval time (when index.tsx is loaded as part of the JS bundle);
+// resolving eagerly returns null. Resolve on first method access instead — by then the
+// proxy is ready. NativeModules fallback covers old-arch / interop paths.
+let _moduleCache: any = null;
+function resolveModule(): any {
+  if (_moduleCache) return _moduleCache;
+  _moduleCache =
+    TurboModuleRegistry.get('StandaloneVideoPlayer') ??
+    NativeModules.StandaloneVideoPlayer;
+  return _moduleCache;
+}
+
+const StandaloneVideoPlayer = new Proxy(
+  {},
+  {
+    get(_, prop: string) {
+      const mod = resolveModule();
+      if (mod == null) {
+        throw new Error(
+          `TurboModule 'StandaloneVideoPlayer' not registered. Rebuild the app natively after the lib's BaseReactPackage migration.`
+        );
+      }
+      return mod[prop];
+    },
+  }
+) as any;
 
 type StandaloneVideoPlayerType = {
   newInstance(): void;
@@ -18,13 +44,17 @@ type StandaloneVideoPlayerType = {
     url: string,
     hls: boolean,
     loop: boolean,
-    isSilent: boolean
+    isSilent: boolean,
+    initialTime: number,
   ): void;
 
   setMuted(instance:number, isMuted: boolean): void;
   getMuted(instance:number): Promise<boolean>
 
   seek(instance: number, position: number): void;
+
+  // Pitch-preserving playback speed (1.0 = normal).
+  setSpeed(instance: number, speed: number): void;
 
   seekForward(instance: number, time: number): void;
 
@@ -36,10 +66,23 @@ type StandaloneVideoPlayerType = {
 
   stop(instance: number): void;
 
+  // Releases the AVPlayerItem (cancels open URL session tasks + frees decoder slot).
+  // Next load() re-attaches a fresh playerItem. Use when an instance is no longer
+  // needed for some time — e.g., feed loses focus.
+  unload(instance: number): void;
+
   getDuration(instance: number): Promise<number>;
   getProgress(instance: number): Promise<number>;
 
   clear(): void;
+
+  // Android-only: force SurfaceFlinger to re-attach the SurfaceView's Layer to
+  // the display tree. Workaround for a MIUI/Android compositor bug where, after
+  // RDS open occludes the feed SurfaceView with an opaque layer, RDS close
+  // doesn't re-signal the Layer needs compositing. ExoPlayer keeps decoding
+  // frames into the Surface (rendered counter increments) but SurfaceFlinger
+  // ignores them — last composited buffer stays frozen on screen.
+  refreshCompositor(instance: number): void;
 };
 
 const PlayerVideoManager = StandaloneVideoPlayer as StandaloneVideoPlayerType;
@@ -73,6 +116,16 @@ function createStandalonePlayerVideoInstance() {
   PlayerVideoManager.newInstance();
 
   return PlayerInstances - 1;
+}
+
+// Idempotent seeding — call once at app startup with the total number of
+// slots you need. Keeps the JS-local PlayerInstances counter in sync with
+// the native list so useVideoPlayer.load()'s grow-on-demand guard never
+// fires behind the wrapper's back.
+function ensureInstances(count: number) {
+  while (PlayerInstances < count) {
+    createStandalonePlayerVideoInstance();
+  }
 }
 
 //
@@ -126,7 +179,7 @@ function getMuted(playerInstance = 0): Promise<boolean> {
       .then((val) => resolve(val || false))
       .catch(() => resolve(false));
   });
-} 
+}
 //
 
 function getVideoProgress(playerInstance = 0): Promise<number> {
@@ -201,7 +254,8 @@ function useVideoPlayer(playerInstance = 0) {
       id: string | null = null,
       isHls = true,
       loop = false,
-      isSilent = false
+      isSilent = false,
+      initialTime = 0,
     ) => {
       if (playerInstance >= PlayerInstances) {
         createStandalonePlayerVideoInstance();
@@ -227,7 +281,7 @@ function useVideoPlayer(playerInstance = 0) {
         // TODO: handle autoplay
       }
 
-      PlayerVideoManager.load(playerInstance, url, isHls, loop, isSilent);
+      PlayerVideoManager.load(playerInstance, url, isHls, loop, isSilent, initialTime);
     },
     [playerInstance]
   );
@@ -235,6 +289,13 @@ function useVideoPlayer(playerInstance = 0) {
   const seek = useCallback(
     (pos: number) => {
       PlayerVideoManager.seek(playerInstance, pos);
+    },
+    [playerInstance]
+  );
+
+  const setSpeed = useCallback(
+    (speed: number) => {
+      PlayerVideoManager.setSpeed(playerInstance, speed);
     },
     [playerInstance]
   );
@@ -265,11 +326,12 @@ function useVideoPlayer(playerInstance = 0) {
       stop,
       load,
       seek,
+      setSpeed,
       seekForward,
       seekRewind,
       getCurrentVideoId,
     }),
-    [getCurrentVideoId, load, pause, play, seek, seekForward, seekRewind, stop]
+    [getCurrentVideoId, load, pause, play, seek, setSpeed, seekForward, seekRewind, stop]
   );
 }
 
@@ -291,25 +353,56 @@ const PlayerInfo = {
   ],
 };
 
+// Keep PlayerInfo.lastStatus always up-to-date, even without hook subscribers
+eventEmitter.addListener('PlayerStatusChanged', (data) => {
+  if (data.instance != null && data.instance < PlayerInfo.lastStatus.length) {
+    PlayerInfo.lastStatus[data.instance] = createStatus(data.status);
+  }
+});
+
+// Synchronous read of the last known status — for handlers/effects that need the
+// status without subscribing (a usePlayerVideoStatus subscription re-renders the
+// caller on every status transition).
+function getPlayerStatus(playerInstance = 0): PlayerStatus {
+  return PlayerInfo.lastStatus[playerInstance];
+}
+
 function usePlayerVideoStatus(playerInstance = 0, recordingId?: string) {
-  // get current status
   const [status, setStatus] = useState(PlayerInfo.lastStatus[playerInstance]);
 
   useEffect(() => {
+    // Tombstone: RN's emit() snapshots the listener Set at start of dispatch,
+    // so a listener removed mid-cycle (or via a follow-up emit racing with
+    // cleanup) still fires from the snapshot. Without this guard, an old
+    // closure's setStatus runs against the (stable) state slot AFTER deps
+    // changed, flipping PlayerBar to a stale status from the prev instance.
+    let alive = true;
+
+    // Reseed on instance/id change. ExoPlayer dedupes setStatus on equal state,
+    // so play() against an already-playing preloaded instance emits no event
+    // and the hook's local state would otherwise stay stale.
+    if (!recordingId || recordingId === CurrentVideoId[playerInstance]) {
+      setStatus(PlayerInfo.lastStatus[playerInstance]);
+    }
+
     const subscription = eventEmitter.addListener(
       'PlayerStatusChanged',
       (data) => {
+        if (!alive) return;
         if (data.instance === playerInstance) {
           if (!recordingId || recordingId === CurrentVideoId[playerInstance]) {
-            PlayerInfo.lastStatus[playerInstance] = createStatus(data.status);
-
-            setStatus(createStatus(data.status));
+            const next = createStatus(data.status);
+            PlayerInfo.lastStatus[playerInstance] = next;
+            setStatus(next);
           }
         }
       }
     );
 
-    return () => subscription.remove();
+    return () => {
+      alive = false;
+      subscription.remove();
+    };
   }, [playerInstance, recordingId]);
 
   const forceLoadingStatus = () => {
@@ -354,6 +447,30 @@ function usePlayerVideoProgress(playerInstance = 0) {
 }
 
 //
+
+// Subscribes to end-of-playthrough events from native. `willRestart = true`
+// when the player is about to loop (native will seek-to-zero+play); `false`
+// when it's the final end (non-loop stop). JS consumers use the flag to
+// decide whether to restart per-playthrough counters.
+function usePlayerPlaybackEnd(
+  playerInstance: number,
+  callback: (willRestart: boolean) => void
+) {
+  useEffect(() => {
+    const subscription = eventEmitter.addListener(
+      'PlayerPlaybackEnded',
+      (data) => {
+        if (data.instance === playerInstance) {
+          callback(!!data.willRestart);
+        }
+      }
+    );
+
+    return () => subscription.remove();
+  }, [playerInstance, callback]);
+}
+
+//
 //
 //
 
@@ -384,8 +501,9 @@ function createStatus(status: number): PlayerStatus {
 // Video View
 // - - - - - -
 
-// requireNativeComponent automatically resolves '(RNTPlayerVideoView)' to 'RNTPlayerVideoViewManager'
-const RNTPlayerVideoView = requireNativeComponent('RNTPlayerVideoView');
+// RNTPlayerVideoView is imported above from PlayerVideoNativeComponent.ts (codegen Fabric
+// component spec). Under newArch this returns a Fabric host component; under old-arch
+// codegenNativeComponent falls back to requireNativeComponent internally.
 
 //
 
@@ -403,15 +521,51 @@ interface PlayerViewProps {
 
 //
 
-const PlayerVideoView: React.FunctionComponent<PlayerViewProps> = (
-  props: PlayerViewProps
-) => {
-  return <RNTPlayerVideoView {...props} />;
-};
+function usePlayerReadyForDisplay(playerInstance = 0, recordingId?: string) {
+  const [isReadyForDisplay, setIsReadyForDisplay] = useState(false);
 
-PlayerVideoView.defaultProps = {
-  isBoundToPlayer: false,
-  playerInstance: -1,
+  useEffect(() => {
+    setIsReadyForDisplay(false);
+    // Events are instance-keyed (no recording id) → cross-check CurrentVideoId so a pooled
+    // instance's stale ready/status for a prior recording doesn't poison this one.
+    const onReady = (data: { instance: number }) => {
+      if (data.instance === playerInstance && CurrentVideoId[playerInstance] === recordingId) {
+        setIsReadyForDisplay(true);
+      }
+    };
+    // Instance now holds a different recording (evict/reload) → this one isn't displayed; reset
+    // so a scroll-back re-masks until its fresh first frame.
+    const onStatus = (data: { instance: number }) => {
+      if (data.instance === playerInstance && CurrentVideoId[playerInstance] !== recordingId) {
+        setIsReadyForDisplay(false);
+      }
+    };
+    const readySub = eventEmitter.addListener('PlayerReadyForDisplay', onReady);
+    const statusSub = eventEmitter.addListener('PlayerStatusChanged', onStatus);
+
+    return () => {
+      readySub.remove();
+      statusSub.remove();
+    };
+  }, [playerInstance, recordingId]);
+
+  return isReadyForDisplay;
+}
+
+//
+
+const PlayerVideoView: React.FunctionComponent<PlayerViewProps> = ({
+  isBoundToPlayer = false,
+  playerInstance = -1,
+  ...rest
+}) => {
+  return (
+    <RNTPlayerVideoView
+      isBoundToPlayer={isBoundToPlayer}
+      playerInstance={playerInstance}
+      {...rest}
+    />
+  );
 };
 
 //
@@ -423,8 +577,13 @@ export {
   PlayerStatus,
   PlayerVideoManager,
   clearPlayerVideo,
+  ensureInstances,
   getVideoDuration,
+  getVideoProgress,
   useVideoPlayer,
   usePlayerVideoStatus,
+  getPlayerStatus,
   usePlayerVideoProgress,
+  usePlayerReadyForDisplay,
+  usePlayerPlaybackEnd,
 };

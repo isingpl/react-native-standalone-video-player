@@ -2,42 +2,35 @@ package com.reactnativestandalonevideoplayer
 
 
 import android.os.Handler
-import android.os.Looper
-import android.util.Log
-import com.facebook.react.bridge.*
-import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.facebook.react.bridge.LifecycleEventListener
+import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.module.annotations.ReactModule
 
-class StandaloneVideoPlayer(val context: ReactApplicationContext): ReactContextBaseJavaModule(context), LifecycleEventListener {
-
-  override fun getName(): String {
-    return "StandaloneVideoPlayer"
-  }
-
-  //
-  // Every ExoPlayer requires to operate on the same thread ("Player is accessed on the wrong thread")
-  // We use main thread here (Handler(context.mainLooper).post)
-  //
-
-  //
+// TurboModule impl. Extends codegen-generated abstract class (NativeStandaloneVideoPlayerSpec)
+// produced from src/NativeStandaloneVideoPlayer.ts at build time. Method signatures must
+// match the spec (TS `number` → Java `double`; cast inside bodies to existing Int/Long shapes).
+@ReactModule(name = StandaloneVideoPlayer.NAME)
+class StandaloneVideoPlayer(val context: ReactApplicationContext) : NativeStandaloneVideoPlayerSpec(context), LifecycleEventListener {
 
   init {
     context.addLifecycleEventListener(this)
-
-    newInstance();
+    // Seeding is now JS-driven (see ensureInstances in src/index.tsx). Keeping
+    // a newInstance() here added a "hidden" slot 0 that the JS-local counter
+    // didn't know about, so the wrapper's load() guard would always spawn
+    // duplicate natives on first use of each slot.
   }
 
   //
   // LifecycleEventListener
   //
   override fun onHostResume() {
-    Log.d("PlayerVideo", "onHostResume")
   }
 
   override fun onHostPause() {
-    Log.d("PlayerVideo", "onHostPause")
-
     for (instance in PlayerVideo.instances) {
-      instance.stop()
+      instance.pause()
     }
   }
 
@@ -50,202 +43,253 @@ class StandaloneVideoPlayer(val context: ReactApplicationContext): ReactContextB
     }
   }
 
+  // Fires on RN bridge teardown (dev fast refresh, prod bridge rebuild).
+  // Without this, the companion-object instances list survived the old module
+  // and the next init re-seeded on top, growing the list unboundedly.
+  override fun invalidate() {
+    super.invalidate()
+    Handler(context.mainLooper).post {
+      for (instance in PlayerVideo.instances) {
+        instance.stop()
+        instance.release()
+      }
+      PlayerVideo.instances.clear()
+    }
+  }
+
   //
-  //
+  // TurboModule methods (match generated abstract signatures — all numerics as double)
   //
 
-  @ReactMethod
-  fun newInstance() {
-    // intialize player instance
+  override fun newInstance() {
     Handler(context.mainLooper).post {
       val instance = PlayerVideo(context)
       PlayerVideo.instances.add(instance)
     }
   }
 
-  @ReactMethod
-  fun load(instance: Int, url: String, isHls: Boolean, loop: Boolean, isSilent: Boolean) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
+  override fun load(instance: Double, url: String, isHls: Boolean, loop: Boolean, isSilent: Boolean, initialTime: Double) {
+    val idx = instance.toInt()
+    val startMs = initialTime.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
       return
     }
 
     Handler(context.mainLooper).post {
-      Log.d("PlayerVideo", "Load = ${url}")
-
-      // mqt_native_modules
-      Log.d("PlayerVideo", "LOOPER load = ${Looper.myLooper()}, main = ${context.mainLooper}")
-
-      PlayerVideo.instances[instance].statusChanged = { status ->
-        Log.d("PlayerVideo", "STATUS = ${status}")
-
+      PlayerVideo.instances[idx].statusChanged = { status ->
         val map = Arguments.createMap()
         map.putInt("status", status.value)
-        map.putInt("instance", instance)
+        map.putInt("instance", idx)
 
-        context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-          .emit("PlayerStatusChanged", map)
+        context.emitDeviceEvent("PlayerStatusChanged", map)
       }
 
-      PlayerVideo.instances[instance].progressChanged = { progress, duration ->
-        Log.d("PlayerVideo", "PROGRESS = ${progress}")
-
+      PlayerVideo.instances[idx].progressChanged = { progress, duration ->
         val map = Arguments.createMap()
         map.putDouble("progress", progress)
         map.putDouble("duration", duration / 1000)
-        map.putInt("instance", instance)
+        map.putInt("instance", idx)
 
-        context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-          .emit("PlayerProgressChanged", map)
+        context.emitDeviceEvent("PlayerProgressChanged", map)
       }
 
-      PlayerVideo.instances[instance].loadVideo(url, isHls, loop)
-
-      if (isSilent) {
-        PlayerVideo.instances[instance].volume = 0f
-      }
-    }
-
-
-  }
-
-  @ReactMethod
-  fun stop(instance: Int) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
-      return
-    }
-
-    Handler(context.mainLooper).post {
-      Log.d("PlayerVideo", "STOOOOP!!")
-
-      PlayerVideo.instances[instance].stop()
-
-      PlayerVideo.instances[instance].statusChanged = null
-    }
-  }
-
-  @ReactMethod
-  fun play(instance: Int) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
-      return
-    }
-
-    Handler(context.mainLooper).post {
-      Log.d("PlayerVideo", "PLAY")
-
-      PlayerVideo.instances[instance].play()
-    }
-  }
-
-  @ReactMethod
-  fun pause(instance: Int) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
-      return
-    }
-
-    Handler(context.mainLooper).post {
-      Log.d("PlayerVideo", "PAUSE")
-
-      PlayerVideo.instances[instance].pause()
-    }
-  }
-
-  @ReactMethod
-  fun seek(instance: Int, position: Double) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
-      return
-    }
-
-    Handler(context.mainLooper).post {
-      Log.d("PlayerVideo", "SEEK TO = ${position}")
-
-      PlayerVideo.instances[instance].seek(position)
-    }
-  }
-
-  @ReactMethod
-  fun seekForward(instance: Int, time: Double) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
-      return
-    }
-
-    Handler(context.mainLooper).post {
-      Log.d("PlayerVideo", "SEEK FORWARD by = ${time}")
-
-      PlayerVideo.instances[instance].seekForward(time)
-    }
-  }
-
-  @ReactMethod
-  fun seekRewind(instance: Int, time: Double) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
-      return
-    }
-
-    Handler(context.mainLooper).post {
-      Log.d("PlayerVideo", "SEEK FORWARD by = ${time}")
-
-      PlayerVideo.instances[instance].seekRewind(time)
-    }
-  }
-
-  @ReactMethod
-  fun setMuted(instance: Int, isMuted: Boolean) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
-      return
-    }
-
-    Handler(context.mainLooper).post {
-      Log.d("PlayerVideo", "setMuted by = ${isMuted}")
-
-      PlayerVideo.instances[instance].muteChanged = { muted ->
-        Log.d("PlayerVideo", "isMuted = ${muted}")
-
+      PlayerVideo.instances[idx].readyForDisplayChanged = {
         val map = Arguments.createMap()
-        map.putInt("instance", instance)
+        map.putInt("instance", idx)
+
+        context.emitDeviceEvent("PlayerReadyForDisplay", map)
+      }
+
+      PlayerVideo.instances[idx].playbackEndReached = { willRestart ->
+        val map = Arguments.createMap()
+        map.putInt("instance", idx)
+        map.putBoolean("willRestart", willRestart)
+
+        context.emitDeviceEvent("PlayerPlaybackEnded", map)
+      }
+
+      PlayerVideo.instances[idx].loadVideo(url, isHls, loop, startMs, isSilent)
+    }
+  }
+
+  override fun stop(instance: Double) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].stop()
+
+      PlayerVideo.instances[idx].statusChanged = null
+    }
+  }
+
+  override fun play(instance: Double) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].play()
+    }
+  }
+
+  override fun pause(instance: Double) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].pause()
+    }
+  }
+
+  override fun seek(instance: Double, position: Double) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].seek(position)
+    }
+  }
+
+  override fun setSpeed(instance: Double, speed: Double) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].setSpeed(speed)
+    }
+  }
+
+  override fun seekForward(instance: Double, time: Double) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].seekForward(time)
+    }
+  }
+
+  override fun seekRewind(instance: Double, time: Double) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].seekRewind(time)
+    }
+  }
+
+  override fun setMuted(instance: Double, isMuted: Boolean) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].muteChanged = { muted ->
+        val map = Arguments.createMap()
+        map.putInt("instance", idx)
         map.putBoolean("isMuted", muted)
 
-        context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-          .emit("PlayerMuteChanged", map)
+        context.emitDeviceEvent("PlayerMuteChanged", map)
       }
-      
-      PlayerVideo.instances[instance].setMuted(isMuted)
+
+      PlayerVideo.instances[idx].setMuted(isMuted)
     }
   }
 
-  @ReactMethod
-  fun getMuted(instance: Int, promise: Promise) {
-    if (instance >= 0 && instance < PlayerVideo.instances.size) {
-      PlayerVideo.instances[instance].isMuted()
-      val isMuted: Boolean = PlayerVideo.instances[instance].isMuted()
+  override fun getMuted(instance: Double, promise: Promise) {
+    val idx = instance.toInt()
+    if (idx in 0 until PlayerVideo.instances.size) {
+      PlayerVideo.instances[idx].isMuted()
+      val isMuted: Boolean = PlayerVideo.instances[idx].isMuted()
       promise.resolve(isMuted)
     } else {
       promise.resolve(false)
     }
   }
 
-  @ReactMethod
-  fun getDuration(instance: Int, promise: Promise) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
+  override fun getDuration(instance: Double, promise: Promise) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
       promise.resolve(0)
       return
     }
 
     Handler(context.mainLooper).post {
-      val duration = PlayerVideo.instances[instance].duration / 1000
+      val duration = PlayerVideo.instances[idx].duration / 1000
       promise.resolve(duration)
     }
   }
 
-  @ReactMethod
-  fun getProgress(instance: Int, promise: Promise) {
-    if (instance < 0 || instance >= PlayerVideo.instances.size) {
+  override fun getProgress(instance: Double, promise: Promise) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
       promise.resolve(0)
       return
     }
 
     Handler(context.mainLooper).post {
-      val duration = PlayerVideo.instances[instance].progress
+      val duration = PlayerVideo.instances[idx].progress
       promise.resolve(duration)
     }
+  }
+
+  override fun clear() {
+    Handler(context.mainLooper).post {
+      for (instance in PlayerVideo.instances) {
+        instance.stop()
+        instance.release()
+      }
+      PlayerVideo.instances.clear()
+    }
+  }
+
+  // Android compositor refresh — see PlayerContainerView.MyPlayerView.refreshCompositor
+  // for the why. Looked up via the activeBoundViews singleton because the bound view
+  // is what owns the SurfaceView that needs the visibility toggle.
+  override fun refreshCompositor(instance: Double) {
+    val idx = instance.toInt()
+    Handler(context.mainLooper).post {
+      PlayerContainerView.activeBoundViews[idx]?.refreshCompositor()
+    }
+  }
+
+  override fun unload(instance: Double) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].stop()
+      PlayerVideo.instances[idx].release()
+    }
+  }
+
+  // Required by codegen spec — NativeEventEmitter compatibility. Events still emit via
+  // RCTDeviceEventEmitter (see load() above); these are placeholders so addListener-style
+  // JS subscriptions don't throw.
+  override fun addListener(eventName: String) {
+    // no-op
+  }
+
+  override fun removeListeners(count: Double) {
+    // no-op
+  }
+
+  companion object {
+    const val NAME = "StandaloneVideoPlayer"
   }
 }
