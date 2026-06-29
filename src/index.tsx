@@ -53,6 +53,9 @@ type StandaloneVideoPlayerType = {
 
   seek(instance: number, position: number): void;
 
+  // Pitch-preserving playback speed (1.0 = normal).
+  setSpeed(instance: number, speed: number): void;
+
   seekForward(instance: number, time: number): void;
 
   seekRewind(instance: number, time: number): void;
@@ -290,6 +293,13 @@ function useVideoPlayer(playerInstance = 0) {
     [playerInstance]
   );
 
+  const setSpeed = useCallback(
+    (speed: number) => {
+      PlayerVideoManager.setSpeed(playerInstance, speed);
+    },
+    [playerInstance]
+  );
+
   const seekForward = useCallback(
     (time: number) => {
       PlayerVideoManager.seekForward(playerInstance, time);
@@ -316,11 +326,12 @@ function useVideoPlayer(playerInstance = 0) {
       stop,
       load,
       seek,
+      setSpeed,
       seekForward,
       seekRewind,
       getCurrentVideoId,
     }),
-    [getCurrentVideoId, load, pause, play, seek, seekForward, seekRewind, stop]
+    [getCurrentVideoId, load, pause, play, seek, setSpeed, seekForward, seekRewind, stop]
   );
 }
 
@@ -348,6 +359,13 @@ eventEmitter.addListener('PlayerStatusChanged', (data) => {
     PlayerInfo.lastStatus[data.instance] = createStatus(data.status);
   }
 });
+
+// Synchronous read of the last known status — for handlers/effects that need the
+// status without subscribing (a usePlayerVideoStatus subscription re-renders the
+// caller on every status transition).
+function getPlayerStatus(playerInstance = 0): PlayerStatus {
+  return PlayerInfo.lastStatus[playerInstance];
+}
 
 function usePlayerVideoStatus(playerInstance = 0, recordingId?: string) {
   const [status, setStatus] = useState(PlayerInfo.lastStatus[playerInstance]);
@@ -564,6 +582,7 @@ export {
   getVideoProgress,
   useVideoPlayer,
   usePlayerVideoStatus,
+  getPlayerStatus,
   usePlayerVideoProgress,
   usePlayerReadyForDisplay,
   usePlayerPlaybackEnd,

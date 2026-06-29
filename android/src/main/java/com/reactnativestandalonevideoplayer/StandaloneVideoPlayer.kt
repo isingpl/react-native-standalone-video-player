@@ -158,6 +158,17 @@ class StandaloneVideoPlayer(val context: ReactApplicationContext) : NativeStanda
     }
   }
 
+  override fun setSpeed(instance: Double, speed: Double) {
+    val idx = instance.toInt()
+    if (idx < 0 || idx >= PlayerVideo.instances.size) {
+      return
+    }
+
+    Handler(context.mainLooper).post {
+      PlayerVideo.instances[idx].setSpeed(speed)
+    }
+  }
+
   override fun seekForward(instance: Double, time: Double) {
     val idx = instance.toInt()
     if (idx < 0 || idx >= PlayerVideo.instances.size) {

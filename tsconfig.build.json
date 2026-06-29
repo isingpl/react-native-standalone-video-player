@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "jsx": "react",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "moduleResolution": "node",
+    "target": "esnext",
+    "lib": ["esnext", "dom"],
+    "rootDir": "src",
+    "declaration": false,
+    "noEmitOnError": false,
+    "strict": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "files": [
+    "src/index.tsx",
+    "src/NativeStandaloneVideoPlayer.ts",
+    "src/PlayerVideoNativeComponent.ts"
+  ]
+}

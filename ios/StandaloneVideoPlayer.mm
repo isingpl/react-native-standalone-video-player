@@ -14,6 +14,7 @@
 RCT_EXTERN_METHOD(newInstance)
 RCT_EXTERN_METHOD(load:(NSInteger)instance url:(NSString *)url isHls:(BOOL)isHls loop:(BOOL)loop isSilent:(BOOL)silent initialTime:(NSInteger)initialTime)
 RCT_EXTERN_METHOD(seek:(NSInteger)instance position:(double)position)
+RCT_EXTERN_METHOD(setSpeed:(NSInteger)instance speed:(double)speed)
 RCT_EXTERN_METHOD(seekForward:(NSInteger)instance time:(double)time)
 RCT_EXTERN_METHOD(seekRewind:(NSInteger)instance time:(double)time)
 RCT_EXTERN_METHOD(setMuted:(NSInteger)instance isMuted:(BOOL)isMuted)

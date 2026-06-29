@@ -22,6 +22,9 @@ export interface Spec extends TurboModule {
   pause(instance: number): void;
   stop(instance: number): void;
   seek(instance: number, position: number): void;
+  // Pitch-preserving playback speed (1.0 = normal). iOS: AVPlayer.rate +
+  // audioTimePitchAlgorithm; Android: ExoPlayer PlaybackParameters(speed) (pitch fixed at 1.0).
+  setSpeed(instance: number, speed: number): void;
   seekForward(instance: number, time: number): void;
   seekRewind(instance: number, time: number): void;
   setMuted(instance: number, isMuted: boolean): void;

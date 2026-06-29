@@ -48,6 +48,11 @@ class PlayerVideo: NSObject {
 
   private var isSeeking = false
 
+  // Pitch-preserving playback speed (1.0 = normal). player.play() and seek reset rate to 1.0, so the
+  // chosen rate is re-asserted after each (see applyDesiredRate). Pitch is held constant via the
+  // playerItem's audioTimePitchAlgorithm (.spectral), set in load().
+  private var desiredRate: Float = 1.0
+
   // Async-loaded asset duration. Reading AVAsset.duration synchronously while it
   // hasn't loaded blocks ALL asset property loads on the device (Apple warning:
   // "Asset property 'duration' accessed synchronously..."). Under bad network
@@ -92,7 +97,14 @@ class PlayerVideo: NSObject {
   private var shouldLoop = true
 
   // we could have one AVPlayer and multiple items
-  let player: AVPlayer = AVPlayer()
+  let player: AVPlayer = {
+    let avPlayer = AVPlayer()
+    // Start playback as soon as the item is ready instead of waiting to build a stall-free
+    // buffer — lowers time-to-first-frame. Trade-off: more risk of mid-playback stalls on poor
+    // networks (AVPlayer no longer self-paces playback rate).
+    avPlayer.automaticallyWaitsToMinimizeStalling = false
+    return avPlayer
+  }()
   
   //
   // Public
@@ -212,10 +224,13 @@ class PlayerVideo: NSObject {
     }
 
     let playerItem = AVPlayerItem(asset: asset)
-    // Cap HLS forward buffer; default auto-tunes to ~30s per instance.
-    // Lowered 20→8: with the freeze fixed, AVPlayer can start playback sooner
-    // on poor connections; less waiting before first frame.
-    playerItem.preferredForwardBufferDuration = 8
+    // Cap forward buffer; default auto-tunes to ~30s per instance.
+    // Lowered 20→8→2: paired with automaticallyWaitsToMinimizeStalling=false, keep the
+    // ahead-buffer small so the first frame shows sooner.
+    playerItem.preferredForwardBufferDuration = 2
+    // Time-stretch so changing playback rate (setSpeed) keeps pitch constant. .spectral is the
+    // highest-quality algorithm — right for a music backing track (vs .timeDomain for speech).
+    playerItem.audioTimePitchAlgorithm = .spectral
 
     // Async duration load — prevents the sync AVAsset.duration access that blocks
     // device-wide media services under poor network. Cache only if asset still bound.
@@ -257,11 +272,39 @@ class PlayerVideo: NSObject {
   
   @objc
   func play() {
+    // After a non-loop end the player was stop()'d, which tore down the KVO/time/end observers and
+    // left endReachedFired set. A replay arrives as play() (no reload), so re-arm end detection here
+    // — otherwise the second playthrough never detects its end (status stays .playing, the JS clock
+    // runs past duration). Guarded on observersAdded so a normal mid-song resume doesn't re-register.
+    if !observersAdded, player.currentItem != nil {
+      endReachedFired = false
+      addObservers()
+    }
+
     player.play()
 
     shouldPlay = true
 
+    applyDesiredRate()
+
     setStatus(.playing)
+  }
+
+  // player.play() (and seek-resume) set rate to 1.0; re-assert the chosen speed after them.
+  private func applyDesiredRate() {
+    if desiredRate != 1.0 {
+      player.rate = desiredRate
+    }
+  }
+
+  // Pitch-preserving playback speed. Applied live if currently playing; otherwise stored and applied
+  // by the next play()/seek-resume. Pitch is held by the item's audioTimePitchAlgorithm (load()).
+  @objc
+  func setSpeed(_ speed: Double) {
+    desiredRate = Float(speed)
+    if status == .playing {
+      player.rate = desiredRate
+    }
   }
 
   @objc
@@ -380,11 +423,21 @@ class PlayerVideo: NSObject {
         // cachedDuration avoids sync asset.duration access; fixed nanosecond timescale is fine here
         let time = CMTime(seconds: progress * cachedDuration, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
 
-        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: { [weak self] (finished) in
-          if finished == false {
-            // seek started
-          } else {
-            self?.didSeek(progress: progress)
+        // Non-zero toleranceAfter: a zero-tolerance EXACT seek on HLS (paired with
+        // automaticallyWaitsToMinimizeStalling=false) stalls the player into an empty buffer after a
+        // forward scrub — video/audio freeze with no recovery, and progress stops. A small tolerance
+        // lands reliably (matches seekToSeconds).
+        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: CMTime(seconds: 2, preferredTimescale: 600), completionHandler: { [weak self] (finished) in
+          guard let self = self else { return }
+          // Always clear isSeeking (even on finished==false). Otherwise handleTick's `!isSeeking`
+          // gate stays shut and progress never resumes. Mirrors the 2026-04-21 loop-wrap fix.
+          self.didSeek(progress: progress)
+          // Force a progress update — AVPlayer's periodic time observer may not fire promptly after a seek.
+          self.progressChanged?(progress, self.duration)
+          // Re-assert play AFTER the seek lands so resume doesn't race the in-flight seek.
+          if self.shouldPlay {
+            self.player.play()
+            self.applyDesiredRate()
           }
         })
     }
@@ -441,6 +494,18 @@ class PlayerVideo: NSObject {
     playerItem.addObserver(self, forKeyPath: "playbackBufferEmpty", options: [], context: nil)
     playerItem.addObserver(self, forKeyPath: "playbackLikelyToKeepUp", options: [], context: nil)
 
+    // Canonical end-of-play signal. The periodic time observer (handleTick) only fires while the
+    // player is playing and on ~1s boundaries, so AVPlayer auto-pausing at true end can leave the
+    // last observed progress below the 0.99 threshold — the end is then never detected and status
+    // stays .playing forever (clock free-runs past duration). This notification fires exactly once
+    // at true end regardless of tick cadence; handleEndReached() dedupes against handleTick.
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(playerItemDidReachEnd(_:)),
+      name: .AVPlayerItemDidPlayToEndTime,
+      object: playerItem
+    )
+
       observersAdded = true
 
       if(!timerAdded){
@@ -474,29 +539,45 @@ class PlayerVideo: NSObject {
           self.progressChanged?(progress, self.duration)
         }
 
-        if (progress >= 0.99 && !self.endReachedFired) {
-          self.endReachedFired = true
-          if (self.shouldLoop) {
-            // Fire end-of-playthrough BEFORE seek+play so JS event handler
-            // runs first and can send playConfirm for the completed loop.
-            self.playbackEndReached?(true)
-            self.isSeeking = true
-            let zero = CMTime(seconds: 0.0, preferredTimescale: 1)
-            let dur = self.duration
-            self.player.seek(to: zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-              self?.isSeeking = false
-              self?.endReachedFired = false
-              // Force UI progress update — periodic observer may not fire promptly
-              // after seek completion if AVPlayer auto-paused at end-of-media.
-              self?.progressChanged?(0.0, dur)
-            }
-            self.play()
-          } else {
-            self.playbackEndReached?(false)
-            self.stop()
-          }
+        if (progress >= 0.99) {
+          self.handleEndReached()
         }
     }
+
+  // True end-of-play notification — fires once when the item plays to its end, even if the periodic
+  // observer never observed progress >= 0.99 (it stops ticking the moment AVPlayer auto-pauses at
+  // end). Routed through the same handler as the handleTick 0.99 path; endReachedFired dedupes.
+  @objc private func playerItemDidReachEnd(_ notification: Notification) {
+    guard let item = notification.object as? AVPlayerItem, item == player.currentItem else { return }
+    handleEndReached()
+  }
+
+  // End-of-playthrough: loop wrap (seek-to-zero + play) or final stop, fired at most once per
+  // playthrough. endReachedFired guards against the handleTick 0.99 pre-empt and the end
+  // notification both firing for the same end.
+  private func handleEndReached() {
+    guard !endReachedFired else { return }
+    endReachedFired = true
+    if (shouldLoop) {
+      // Fire end-of-playthrough BEFORE seek+play so JS event handler
+      // runs first and can send playConfirm for the completed loop.
+      playbackEndReached?(true)
+      isSeeking = true
+      let zero = CMTime(seconds: 0.0, preferredTimescale: 1)
+      let dur = duration
+      player.seek(to: zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+        self?.isSeeking = false
+        self?.endReachedFired = false
+        // Force UI progress update — periodic observer may not fire promptly
+        // after seek completion if AVPlayer auto-paused at end-of-media.
+        self?.progressChanged?(0.0, dur)
+      }
+      play()
+    } else {
+      playbackEndReached?(false)
+      stop()
+    }
+  }
   
   private func removeObservers() {
     if observersAdded, let playerItem = player.currentItem {
@@ -505,6 +586,8 @@ class PlayerVideo: NSObject {
       playerItem.removeObserver(self, forKeyPath: "playbackLikelyToKeepUp")
       observersAdded = false
     }
+
+    NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: nil)
 
     stopTimer()
   }

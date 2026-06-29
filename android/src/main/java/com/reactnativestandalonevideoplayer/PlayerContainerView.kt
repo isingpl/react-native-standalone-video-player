@@ -135,23 +135,14 @@ class MyPlayerView : PlayerView {
       sy = viewAspect / videoAspect
     }
 
-    when (surface) {
-      is TextureView -> {
-        val matrix = Matrix()
-        matrix.setScale(sx, sy, viewW / 2f, viewH / 2f)
-        surface.setTransform(matrix)
-        surface.invalidate()
-      }
-      // SurfaceView has no setTransform; scale the view itself (the parent FrameLayout clips the
-      // overflow) for the same aspect-preserving center-crop the TextureView Matrix gave. Without
-      // this, resize_mode="fill" just stretches the video to the (often square) cell.
-      is SurfaceView -> {
-        surface.pivotX = surface.width / 2f
-        surface.pivotY = surface.height / 2f
-        surface.scaleX = sx
-        surface.scaleY = sy
-      }
-    }
+    // videoSurfaceView is a TextureView (surface_type="texture_view"): center-crop via a Matrix
+    // on top of XML resize_mode="fill" (which stretches). setTransform is same-frame, so no
+    // late-scale flash on reveal (the reason the cover-reveal delay could be dropped).
+    val texture = surface as? TextureView ?: return
+    val matrix = Matrix()
+    matrix.setScale(sx, sy, viewW / 2f, viewH / 2f)
+    texture.setTransform(matrix)
+    texture.invalidate()
   }
 
   // Recover from a frozen video state after rapid Surface swap. Two distinct hypotheses
@@ -189,13 +180,26 @@ class MyPlayerView : PlayerView {
 
     val playerVideo = PlayerVideo.instances[playerInstance]
 
-    // SurfaceView path would need a different masking strategy (parent alpha may not
-    // gate SurfaceFlinger Layers reliably across Android versions); current XML uses
-    // texture_view so the alpha=0 fade-in works as the cover-image → video transition.
-    val isSurfaceView = videoSurfaceView is android.view.SurfaceView
-    if (!isSurfaceView) {
-      alpha = 0f
+    // Bind to an ALREADY-rendered instance (feed→tag / feed→RDS handoff of a recording that's
+    // already playing): media3 pushes the current decoded frame to the new surface immediately on
+    // setVideoSurfaceView, but onRenderedFirstFrame does NOT reliably re-fire on a mid-playback
+    // surface swap → the alpha/JS cover mask would wait forever (video plays but looks paused, and
+    // the feed cell re-binds into the same stuck mask on back → black). Reveal now and re-emit the
+    // JS ready event so usePlayerReadyForDisplay lifts the cover. Posted so the freshly-mounted
+    // cell's listener has had a tick to register.
+    if (playerVideo.hasRenderedFirstFrame) {
+      hasRenderedFirstFrame = true
+      alpha = 1f
+      Handler(Looper.getMainLooper()).post {
+        playerVideo.readyForDisplayChanged?.invoke()
+      }
+      return
     }
+
+    // XML uses texture_view, so the alpha=0 fade-in (animated to 1 on first frame below)
+    // works as the cover-image → video transition — the native reveal that lets the JS
+    // cover-mask be dropped.
+    alpha = 0f
     // Use the dedicated view-callback slot so we don't clobber the JS-event emitter
     // installed by StandaloneVideoPlayer.load() (which is what `usePlayerReadyForDisplay`
     // depends on). Both callbacks are invoked from PlayerVideo.onRenderedFirstFrame.
@@ -362,13 +366,16 @@ class PlayerContainerView : SimpleViewManager<MyPlayerView>(),
     // reuses it instead. Only pool a FULLY detached view: if PlayerView's internal
     // player ref is still set (unbindPreserveSurface path — clearing it here risks the
     // documented MediaCodec surface-clear freeze race), let the view GC as before.
-    if (view.player == null && viewPool.size < POOL_MAX) {
-      (view.parent as? android.view.ViewGroup)?.removeView(view)
+    // Pool ONLY parentless views. On the RDS open/close path Fabric detaches the view
+    // before dropping it (parent == null here). On a whole-SCREEN pop Fabric drops the
+    // subtree WITHOUT detaching children — the view arrives still parented, and calling
+    // removeView() on its React parent behind Fabric's back desyncs the parent's child
+    // bookkeeping (subview-clipping arrays) → "addViewAt: child already has a parent"
+    // mount crash on the next visit (verified 2026-06-12, tag-recordings screen). Those
+    // views are discarded and GC like pre-pool.
+    if (view.player == null && view.parent == null && viewPool.size < POOL_MAX) {
       view.resetForPool()
       viewPool.addLast(view)
-      android.util.Log.d("asd_ViewPool", "pooled (size=${viewPool.size})")
-    } else {
-      android.util.Log.d("asd_ViewPool", "discarded (player=${view.player != null}, size=${viewPool.size})")
     }
     super.onDropViewInstance(view)
   }
@@ -380,11 +387,9 @@ class PlayerContainerView : SimpleViewManager<MyPlayerView>(),
     while (viewPool.isNotEmpty()) {
       val pooled = viewPool.removeFirst()
       if (pooled.context === reactContext) {
-        android.util.Log.d("asd_ViewPool", "reuse (size=${viewPool.size})")
         return pooled
       }
     }
-    android.util.Log.d("asd_ViewPool", "inflate")
     return inflateView(reactContext)
   }
 

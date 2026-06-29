@@ -106,8 +106,17 @@ class StandaloneVideoPlayer: RCTEventEmitter {
     @objc(seek:position:)
     func seek(instance: Int, position: Double) {
         guard instance >= 0 && instance < PlayerVideo.instances.count else { return }
-        
+
         PlayerVideo.instances[instance].seekTo(position: position)
+    }
+
+    //
+
+    @objc(setSpeed:speed:)
+    func setSpeed(instance: Int, speed: Double) {
+        guard instance >= 0 && instance < PlayerVideo.instances.count else { return }
+
+        PlayerVideo.instances[instance].setSpeed(speed)
     }
     
     //
